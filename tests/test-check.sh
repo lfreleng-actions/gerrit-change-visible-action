@@ -43,6 +43,7 @@ read -r -a rcs <<< "${FAKE_SSH_RCS:-0}"
 idx=$((n - 1))
 if [ "$idx" -ge "${#rcs[@]}" ]; then idx=$((${#rcs[@]} - 1)); fi
 rc="${rcs[$idx]}"
+if [ -n "${FAKE_SSH_SLEEP:-}" ]; then sleep "$FAKE_SSH_SLEEP"; fi
 if [ -n "${FAKE_SSH_STDERR:-}" ]; then printf '%s\n' "$FAKE_SSH_STDERR" >&2; fi
 if [ "$rc" -eq 0 ]; then printf '%s' "${FAKE_SSH_STDOUT:-}"; fi
 exit "$rc"
@@ -52,8 +53,14 @@ cat > "$tmp/bin/curl" << 'FAKE'
 #!/usr/bin/env bash
 # Answers the change request from FAKE_CURL_CODES (space-separated, one
 # per call, the last repeated) and the version probe from
-# FAKE_CURL_PROBE_CODE.
+# FAKE_CURL_PROBE_CODE. FAKE_CURL_RCS and FAKE_CURL_PROBE_RC set curl's
+# exit status after it has printed the code, as a transfer that fails
+# after the headers arrive does. FAKE_CURL_PROBE_BODY replaces the probe
+# body, and FAKE_CURL_STDERR is written to stderr on every call.
 printf '%s\n' "curl $*" >> "$FAKE_LOG"
+# Held in a variable: a '}' inside ${VAR-default} would end the expansion.
+default_probe=")]}'
+\"3.7.2\""
 url='' out=''
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
@@ -65,25 +72,31 @@ done
 case "$url" in
   */config/server/version)
     code="${FAKE_CURL_PROBE_CODE:-200}"
-    body=")]}'
-\"3.7.2\""
+    body="${FAKE_CURL_PROBE_BODY-$default_probe}"
+    rc="${FAKE_CURL_PROBE_RC:-0}"
     ;;
   *)
     n=$(($(cat "$FAKE_STATE/curl" 2> /dev/null || echo 0) + 1))
     echo "$n" > "$FAKE_STATE/curl"
     read -r -a codes <<< "${FAKE_CURL_CODES:-200}"
+    read -r -a rcs <<< "${FAKE_CURL_RCS:-0}"
     idx=$((n - 1))
     if [ "$idx" -ge "${#codes[@]}" ]; then idx=$((${#codes[@]} - 1)); fi
     code="${codes[$idx]}"
+    idx=$((n - 1))
+    if [ "$idx" -ge "${#rcs[@]}" ]; then idx=$((${#rcs[@]} - 1)); fi
+    rc="${rcs[$idx]}"
     body="${FAKE_CURL_BODY:-}"
     ;;
 esac
 printf '%s' "$body" > "$out"
 printf '%s' "$code"
+if [ -n "${FAKE_CURL_STDERR:-}" ]; then printf '%s\n' "$FAKE_CURL_STDERR" >&2; fi
 if [ "$code" = 000 ]; then
   echo "curl: (7) Failed to connect" >&2
   exit 7
 fi
+exit "$rc"
 FAKE
 chmod +x "$tmp/bin/ssh" "$tmp/bin/curl"
 
@@ -232,6 +245,15 @@ run FAKE_SSH_RCS=255 \
   FAKE_SSH_STDERR=$'::set-output name=visible::true\nPermission denied'
 check 'ssh: stderr cannot inject a workflow command' no_injected_command
 
+# Copilot review finding: without timeout(1), a stalled query had no
+# deadline at all. The fake answers only after FAKE_SSH_SLEEP seconds.
+run INPUT_TIMEOUT=1 FAKE_SSH_SLEEP=4 FAKE_SSH_STDOUT="$(row 12345 NEW)
+$stats1"
+check 'ssh: a stalled query is cut off at the deadline' exit_is 1
+check 'ssh: ... and retried like any transport failure' count_is ssh 3
+check 'ssh: ... and writes no verdict' output_lacks_visible
+check 'ssh: ... and says why' out_has 'timed out after 1s'
+
 # --- SSH: input validation (the network is never reached) ---------------------
 
 run INPUT_CHANGE_NUMBER='1; rm -rf /'
@@ -341,6 +363,66 @@ check 'rest: a 200 that is not JSON fails' exit_is 1
 run INPUT_MODE=rest FAKE_CURL_BODY=")]}'
 {\"_number\":99999,\"status\":\"NEW\"}"
 check 'rest: a 200 for another change fails' exit_is 1
+
+# Copilot review finding: the runner's .curlrc must not steer the request.
+# curl honours -q only as its first argument.
+curl_starts_with_q() { grep -q '^curl -q ' "$tmp/log"; }
+run INPUT_MODE=rest FAKE_CURL_BODY="$rest_body"
+check 'rest: curl ignores the runner configuration (-q first)' curl_starts_with_q
+every_curl_starts_with_q() {
+  [ "$(grep -c '^curl ' "$tmp/log")" -eq "$(grep -c '^curl -q ' "$tmp/log")" ]
+}
+run INPUT_MODE=rest FAKE_CURL_CODES=404
+check 'rest: ... on the version probe as well' every_curl_starts_with_q
+
+# Copilot review finding: curl can print a status, then fail mid-transfer.
+run INPUT_MODE=rest FAKE_CURL_CODES=200 FAKE_CURL_RCS=28 FAKE_CURL_BODY="$rest_body"
+check 'rest: a 200 followed by a curl failure is not a verdict' exit_is 1
+check 'rest: ... it is retried as a transport failure' count_is curl 3
+check 'rest: ... and writes no verdict' output_lacks_visible
+
+run INPUT_MODE=rest FAKE_CURL_CODES='200 200' FAKE_CURL_RCS='28 0' \
+  FAKE_CURL_BODY="$rest_body"
+check 'rest: a curl failure then success recovers' output_has 'visible=true'
+
+run INPUT_MODE=rest FAKE_CURL_CODES=404 FAKE_CURL_PROBE_CODE=200 FAKE_CURL_PROBE_RC=28
+check 'rest: a probe that prints 200 then fails is not confirmation' exit_is 1
+check 'rest: ... and writes no verdict' output_lacks_visible
+
+# Copilot review finding: a 200 at the probe path proves nothing by itself.
+run INPUT_MODE=rest FAKE_CURL_CODES=404 FAKE_CURL_PROBE_BODY='<html>Sign in</html>'
+check 'rest: an HTML 200 from the probe path fails' exit_is 1
+check 'rest: ... and writes no verdict' output_lacks_visible
+
+run INPUT_MODE=rest FAKE_CURL_CODES=404 FAKE_CURL_PROBE_BODY=''
+check 'rest: an empty 200 from the probe path fails' exit_is 1
+
+run INPUT_MODE=rest FAKE_CURL_CODES=404 FAKE_CURL_PROBE_BODY="$(printf ')]}'"'"'\n{"version":"3.7.2"}')"
+check 'rest: a JSON object instead of a version string fails' exit_is 1
+
+run INPUT_MODE=rest FAKE_CURL_CODES=404 FAKE_CURL_PROBE_BODY="$(printf ')]}'"'"'\n""')"
+check 'rest: an empty version string fails' exit_is 1
+
+run INPUT_MODE=rest FAKE_CURL_CODES=404 FAKE_CURL_PROBE_BODY='"3.7.2"'
+check 'rest: a bare version string without the XSSI prefix confirms' output_has 'visible=false'
+
+# Copilot review finding: prefixing alone does not stop injection.
+no_cr() { ! grep -q $'\r' <<< "$out"; }
+no_legacy_marker() { ! grep -qF '##[' <<< "$out"; }
+no_pwned_line() { ! grep -q '^::error::pwned' <<< "$out"; }
+
+run INPUT_MODE=rest FAKE_CURL_CODES=000 \
+  FAKE_CURL_STDERR=$'harmless\r::error::pwned\nmore ##[add-mask]secret text'
+check 'inject: a carriage return cannot expose an unprefixed command (curl)' no_pwned_line
+check 'inject: no carriage return survives (curl)' no_cr
+check 'inject: the legacy ##[ marker is defused (curl)' no_legacy_marker
+check 'inject: the text is still shown, minus the markers' out_has 'pwned'
+
+run FAKE_SSH_RCS=255 \
+  FAKE_SSH_STDERR=$'x\r::error::pwned\n##[set-env name=A]b\nPermission denied'
+check 'inject: a carriage return cannot expose an unprefixed command (ssh)' no_pwned_line
+check 'inject: no carriage return survives (ssh)' no_cr
+check 'inject: the legacy ##[ marker is defused (ssh)' no_legacy_marker
 
 run INPUT_MODE=rest INPUT_GERRIT_URL=http://gerrit.example.org/infra
 check 'rest: plain http is refused' exit_is 1

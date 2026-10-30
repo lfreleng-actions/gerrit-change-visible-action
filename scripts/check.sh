@@ -40,12 +40,17 @@ require() {
   fi
 }
 
-# Show a captured stream without letting a line begin with '::', which
-# the runner would read as a workflow command.
+# Show a captured stream without letting it reach the runner as a
+# workflow command. Prefixing every line stops a line starting '::', but
+# the runner also splits on a bare carriage return, which would expose
+# an unprefixed '::' after it, and reads the legacy '##[' marker
+# anywhere in a line. So drop every control character except the
+# newline, defuse the marker, and only then prefix.
 show() {
   local label=$1 file=$2
   if [ -s "$file" ]; then
-    sed "s/^/$label: /" "$file"
+    LC_ALL=C tr -d '\000-\011\013-\037\177' < "$file" |
+      LC_ALL=C sed -e 's/##\[/# #[/g' -e "s/^/$label: /"
   fi
 }
 
@@ -113,11 +118,11 @@ run_ssh() {
     -- "$host"
     gerrit query --format=JSON "change:$change"
   )
-  if command -v timeout > /dev/null 2>&1; then
-    timeout "$timeout_s" "${cmd[@]}"
-  else
-    "${cmd[@]}"
-  fi
+  # ConnectTimeout bounds only connection setup, and keepalives do not
+  # stop a responsive server whose query has stalled. Enforce the
+  # deadline on the whole attempt, the same way on every runner:
+  # timeout(1) is absent from some, such as stock macOS.
+  python3 "$script_dir/run_with_timeout.py" "$timeout_s" -- "${cmd[@]}"
 }
 
 query_ssh() {
@@ -179,16 +184,27 @@ query_ssh() {
 
 # GET a URL, retrying only failures that say nothing about the change.
 # Leaves the status in http_code and the body in $work/response.
+#
+# curl can print a status and still fail: the headers arrive, then the
+# transfer times out. So a nonzero exit is a transport failure whatever
+# status it printed, and is reported as 000.
 http_code=''
 fetch() {
-  local attempt=1
+  local attempt=1 curl_rc
   while :; do
-    http_code="$(curl --silent --show-error \
+    curl_rc=0
+    # -q must come first: it stops curl reading the runner's .curlrc,
+    # where a 'user', an Authorization header or 'insecure' would turn
+    # this anonymous, certificate-verified request into something else.
+    http_code="$(curl -q --silent --show-error \
       --max-time "$timeout_s" --max-redirs 0 \
       --proto '=https' --tlsv1.2 \
       --header 'Accept: application/json' \
       --output "$work/response" --write-out '%{http_code}' \
-      --url "$1" 2> "$work/stderr" || true)"
+      --url "$1" 2> "$work/stderr")" || curl_rc=$?
+    if [ "$curl_rc" -ne 0 ] || [[ ! $http_code =~ ^[0-9]{3}$ ]]; then
+      http_code=000
+    fi
     case "$http_code" in
       000 | 429 | 5[0-9][0-9]) ;;
       *) return 0 ;;
@@ -225,9 +241,16 @@ query_rest() {
   # URL missing its path prefix (/infra, /gerrit) gets the same answer
   # for every change. Only a server that answers its version request
   # here may declare the change not visible.
+  #
+  # A 200 alone proves little: a proxy or a login page can answer one
+  # for any path. The body must be a version string.
   fetch "$url/config/server/version"
   if [ "$http_code" != 200 ]; then
     fail "No such change, and the server did not confirm gerrit-url (HTTP $http_code); check the path prefix."
+  fi
+  if ! python3 "$script_dir/parse_response.py" version "$work/response" > /dev/null 2> "$work/parse_error"; then
+    show parser "$work/parse_error"
+    fail "No such change, and gerrit-url did not answer like a Gerrit server; check the path prefix."
   fi
   not_found=true
 }

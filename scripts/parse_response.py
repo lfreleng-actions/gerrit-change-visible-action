@@ -11,9 +11,13 @@ step. Reporting "not visible" for an answer nobody understood would let
 a broken check pass as a reason to skip verification.
 
 Usage: parse_response.py {ssh|rest} CHANGE_NUMBER FILE
+       parse_response.py version FILE
 
-Prints ``visible=true|false`` and ``status=<STATUS>`` on success, and
-exits 2 with a fixed-text message on stderr when the answer is unusable.
+The first form prints ``visible=true|false`` and ``status=<STATUS>``.
+The second checks the answer to ``GET /config/server/version``, which a
+REST caller uses to tell a missing change from a wrong base URL, and
+prints ``version=<VERSION>``. Both exit 2 with a fixed-text message on
+stderr when the answer is unusable.
 """
 
 from __future__ import annotations
@@ -27,7 +31,11 @@ from typing import cast
 
 _STATUS = re.compile(r"^[A-Z_]{1,32}$")
 _XSSI_PREFIX = ")]}'"
-_USAGE = "usage: parse_response.py {ssh|rest} CHANGE_NUMBER FILE"
+_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
+_USAGE = (
+    "usage: parse_response.py {ssh|rest} CHANGE_NUMBER FILE"
+    " | parse_response.py version FILE"
+)
 
 Record = dict[str, object]
 
@@ -114,8 +122,38 @@ def parse_rest(text: str, change_number: int) -> Verdict:
     return Verdict(visible=True, status=_status(record.get("status")))
 
 
+def parse_version(text: str) -> str:
+    """Interpret the body of ``GET /config/server/version``.
+
+    A server answering for any path with HTTP 200, as a proxy or a login
+    page can, is not a Gerrit server. Gerrit answers with a JSON string
+    after the XSSI prefix, so require exactly that.
+    """
+    try:
+        value = _loads(text.removeprefix(_XSSI_PREFIX))
+    except json.JSONDecodeError as exc:
+        raise ParseError("the version response is not JSON") from exc
+    if not isinstance(value, str) or not _VERSION.fullmatch(value):
+        raise ParseError("the version response is not a version string")
+    return value
+
+
+def _run_version(path: str) -> int:
+    """Check a version response; return the process exit status."""
+    try:
+        version = parse_version(Path(path).read_text(encoding="utf-8"))
+    except (ParseError, OSError, UnicodeDecodeError) as exc:
+        reason = str(exc) if isinstance(exc, ParseError) else "unreadable input"
+        print(f"error: {reason}", file=sys.stderr)
+        return 2
+    print(f"version={version}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     """Run the parser; return the process exit status."""
+    if len(argv) == 3 and argv[1] == "version":
+        return _run_version(argv[2])
     if len(argv) != 4 or argv[1] not in {"ssh", "rest"}:
         print(_USAGE, file=sys.stderr)
         return 2

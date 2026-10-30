@@ -127,7 +127,11 @@ that merge within seconds of the dispatch.
 
 Runs `gerrit query --format=JSON change:<number>` as the named
 account, with strict host key checking against the `known_hosts` value
-supplied. This is the account whose votes matter, which makes it the
+supplied. The `timeout` input limits the whole attempt, including the
+connection, so a server that accepts the connection and then stalls
+cannot hold the step. A small Python runner enforces it the same way on
+every platform, because `timeout(1)` is missing from some, such as
+stock macOS. This is the account whose votes matter, which makes it the
 production semantic: Gerrit can hide a change from this account that
 anonymous users can read, or the reverse.
 
@@ -141,9 +145,10 @@ substitute for SSH mode in a voting workflow.
 Gerrit answers `404` both for a missing or private change and for a
 base URL that lacks its path prefix, which would make every change look
 unreadable. On a `404` the action also asks the server for
-`/config/server/version`, and declares "not visible" when that request
-succeeds. Otherwise the step fails and names the base URL as the
-suspect.
+`/config/server/version`, and declares "not visible" when the answer is
+a version string. An error, a failed transfer, or a 200 that is not a
+version (a proxy or a login page can answer one for any path) fails the
+step and names the base URL as the suspect.
 
 ### Security notes
 
@@ -154,9 +159,13 @@ suspect.
   (mode 600), never to `~/.ssh`, and removes it when the step ends. SSH
   ignores the runner's own configuration (`-F /dev/null`).
 - REST mode refuses plain HTTP, redirects, URLs carrying credentials or
-  a query string.
-- The action prefixes every line of `ssh` and `curl` output, which stops
-  a hostile server from starting a line with `::` and injecting a
+  a query string, and ignores the runner's `.curlrc`, so a `user`, an
+  Authorization header or `insecure` there cannot change what the check
+  sends or verifies.
+- Before the action shows `ssh` or `curl` output, it drops every
+  control character except the newline (a bare carriage return would
+  expose an unprefixed `::` to the runner), defuses the legacy `##[`
+  marker, and prefixes each line. A hostile server cannot inject a
   workflow command.
 
 ### Network access

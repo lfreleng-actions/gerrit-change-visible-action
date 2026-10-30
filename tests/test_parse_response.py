@@ -87,6 +87,30 @@ class ParseRest(unittest.TestCase):
                 _ = pr.parse_rest(text, 5)
 
 
+class ParseVersion(unittest.TestCase):
+    """The version probe that separates a missing change from a wrong URL."""
+
+    def test_accepts_gerrit_answers(self) -> None:
+        self.assertEqual(pr.parse_version(')]}\'\n"3.7.2"'), "3.7.2")
+        self.assertEqual(pr.parse_version('"3.13.0-rc1"'), "3.13.0-rc1")
+
+    def test_rejections(self) -> None:
+        cases = {
+            "html": "<html>Sign in</html>",
+            "empty": "",
+            "empty string": ')]}\'\n""',
+            "object": ')]}\'\n{"version":"3.7.2"}',
+            "number": ")]}'\n3",
+            "null": "null",
+            "leading punctuation": '")]}"',
+            "too long": '"' + "1" * 65 + '"',
+            "whitespace": '"3.7 2"',
+        }
+        for name, text in cases.items():
+            with self.subTest(case=name), self.assertRaises(pr.ParseError):
+                _ = pr.parse_version(text)
+
+
 class Cli(unittest.TestCase):
     """The command line the shell script drives."""
 
@@ -120,6 +144,32 @@ class Cli(unittest.TestCase):
         code, out, err = self.run_cli("rest", "5", "<html>")
         self.assertEqual((code, out), (2, ""))
         self.assertEqual(err, "error: the response is not JSON\n")
+
+    def run_version(self, text: str) -> tuple[int, str, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "response"
+            _ = path.write_text(text, encoding="utf-8")
+            done = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "parse_response.py"),
+                    "version",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        return done.returncode, done.stdout, done.stderr
+
+    def test_version_accepted(self) -> None:
+        code, out, _ = self.run_version(')]}\'\n"3.7.2"')
+        self.assertEqual((code, out), (0, "version=3.7.2\n"))
+
+    def test_version_rejected_with_a_fixed_message(self) -> None:
+        code, out, err = self.run_version("<html>")
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(err, "error: the version response is not JSON\n")
 
     def test_bad_usage(self) -> None:
         code, _, _ = self.run_cli("carrier-pigeon", "5", "")
