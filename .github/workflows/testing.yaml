@@ -20,28 +20,68 @@ concurrency:
 permissions: {}
 
 jobs:
-  ### Test the GitHub Action in this Repository ###
-  tests:
-    name: "Test local GitHub Action"
+  ### Offline tests: no network beyond GitHub ###
+  unit:
+    name: "Unit tests"
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    timeout-minutes: 10 # Increase this timeout value as needed
+    timeout-minutes: 10
     steps:
-      # Load the egress allow-list out-of-band from the
-      # organisation's .github repository and publish it as
-      # $CONNECTION_ALLOW_LIST for the harden-runner step below.
-      # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@e5e8179f45aa893b23cc8b5d2e25466355d9c4f8  # v0.14.0
-        with:
-          config: '@56d70f0eae78f334a598d1ffe071d4b821517b22'  # v0.17.1
-
-      # Harden the runner with the just-loaded allow-list.
+      # These tests run against fake ssh and curl programs and use the
+      # runner's own python3, so they need no host beyond GitHub. A
+      # one-entry list is easier to audit than the organisation list.
+      # github.com is listed although harden-runner allows it anyway:
+      # block mode with an empty list draws a warning annotation. Agent
+      # telemetry is off because the list does not allow its endpoint.
       - name: 'Harden runner (block)'
         # yamllint disable-line rule:line-length
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: 'block'
+          disable-telemetry: true
+          allowed-endpoints: >
+            github.com:443
+
+      - name: "Checkout repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Parser tests"
+        shell: bash
+        run: python3 -B -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: "Script tests (fake ssh and curl)"
+        shell: bash
+        run: bash tests/test-check.sh
+
+  ### Exercise the action itself, anonymously, against a live Gerrit ###
+  integration:
+    name: "Integration (REST, live Gerrit)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    env:
+      # LF's Gerrit serves its REST API under /infra.
+      GERRIT_URL: https://gerrit.linuxfoundation.org/infra
+    steps:
+      # This job's only traffic beyond GitHub is the LF Gerrit, so it
+      # loads the Gerrit servers list rather than the organisation list.
+      # The file is not named allow_list.txt on purpose; see its header.
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@e5e8179f45aa893b23cc8b5d2e25466355d9c4f8  # v0.14.0
+        with:
+          # yamllint disable-line rule:line-length
+          config: 'lfreleng-actions//.github/harden-runner/lf-gerrit-servers/gerrit_servers.txt@685713c19320a902196417b8aae17a6e753efaba'
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          disable-telemetry: true
           allowed-endpoints: >
             ${{ env.CONNECTION_ALLOW_LIST }}
 
@@ -50,37 +90,59 @@ jobs:
         with:
           persist-credentials: false
 
-      # Perform setup prior to running test(s)
-      - name: "Testing setup step"
-        shell: bash
-        run: |
-          # Testing setup step
-          echo "Testing setup step"
-          echo "Testing setup step/summary output" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: "Running local action: ${{ github.repository }}"
+      # A number no Gerrit will have reached: a verdict of "not
+      # visible", not an error.
+      - name: "Nonexistent change is not visible"
+        id: missing
         uses: $/
         with:
-          input: "test input 💬"
+          mode: "rest"
+          gerrit-change-number: "999999999"
+          gerrit-url: ${{ env.GERRIT_URL }}
 
-      - name: "Validated local action: ${{ github.repository }}"
+      - name: "Check the verdict"
         shell: bash
         env:
-          REPO: ${{ github.repository }}
+          VISIBLE: ${{ steps.missing.outputs.visible }}
+          STATUS: ${{ steps.missing.outputs.status }}
         run: |
-          # Local action validation
-          echo "Validated local action: $REPO"
-          echo "Validation step summary output" >> "$GITHUB_STEP_SUMMARY"
+          # Check the verdict
+          if [ "$VISIBLE" != "false" ] || [ -n "$STATUS" ]; then
+            echo "Error: expected visible=false and no status ❌"
+            exit 1
+          fi
+          echo "Nonexistent change reported not visible ✅"
 
+      # The same 404 from a base URL missing its path prefix must NOT
+      # read as "not visible": every change would look unreadable and
+      # verification would be skipped for all of them.
+      - name: "Wrong base URL must fail, not report not visible"
+        id: wrong-url
+        uses: $/
+        continue-on-error: true
+        with:
+          mode: "rest"
+          gerrit-change-number: "999999999"
+          gerrit-url: https://gerrit.linuxfoundation.org
+
+      - name: "Error if the wrong base URL did NOT fail"
+        if: steps.wrong-url.outcome == 'success'
+        shell: bash
+        run: |
+          # Error if the step above did NOT fail
+          echo "Error: a wrong base URL was reported as a verdict ❌"
+          exit 1
+
+      # Failure testing is also important
       # yamllint disable-line rule:line-length
       - name: "Running local action: ${{ github.repository }} [Override Failure]"
         uses: $/
         id: failure
         continue-on-error: true
         with:
-          invalid_input: "Some garbage"
+          mode: "rest"
+          gerrit-url: ${{ env.GERRIT_URL }}
 
-      # Failure testing is also important
       - name: "Error if step above did NOT fail"
         if: steps.failure.outcome == 'success'
         shell: bash
