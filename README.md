@@ -73,8 +73,8 @@ secrets are unavailable, such as a pull request from a fork:
 | -------------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------- |
 | gerrit-change-number | True     |         | Change number: digits, no leading zero                                                                     |
 | mode                 | False    | `ssh`   | `ssh` (as the voting account) or `rest` (anonymous)                                                        |
-| host                 | ssh      |         | Gerrit SSH host name                                                                                       |
-| port                 | False    | `29418` | Gerrit SSH port                                                                                            |
+| host                 | ssh      |         | Gerrit SSH host name; may carry its port as `host:NNNN`, which overrides `port`                            |
+| port                 | False    | `29418` | Gerrit SSH port; ignored when `host` carries one                                                           |
 | username             | ssh      |         | Gerrit SSH user name                                                                                       |
 | key                  | ssh      |         | SSH private key of the account                                                                             |
 | known_hosts          | ssh      |         | `known_hosts` entry for the host; for a non-default port, as `ssh-keyscan -p` writes it: `[host]:port ...` |

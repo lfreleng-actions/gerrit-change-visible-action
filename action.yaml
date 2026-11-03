@@ -35,11 +35,14 @@ inputs:
     required: false
     default: "ssh"
   host:
-    description: "Gerrit SSH host name (mode 'ssh')"
+    description: >-
+      Gerrit SSH host name (mode 'ssh'). May carry its port as
+      'host:NNNN', which overrides 'port'.
     required: false
     default: ""
   port:
-    description: "Gerrit SSH port (mode 'ssh')"
+    description: >-
+      Gerrit SSH port (mode 'ssh'). Ignored when 'host' carries a port.
     required: false
     default: "29418"
   username:

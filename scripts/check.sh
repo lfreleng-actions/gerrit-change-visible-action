@@ -131,6 +131,23 @@ query_ssh() {
   port="${INPUT_PORT:-29418}"
   local key="${INPUT_KEY:-}" known_hosts="${INPUT_KNOWN_HOSTS:-}"
 
+  # 'host' may carry its port, as gerrit-review-action accepts it, so a
+  # caller can hand both actions the same GERRIT_SERVER value. A
+  # 'name:digits' value splits, and its port wins over the 'port' input.
+  # Any other value with a colon (an IPv6 literal, a non-numeric or
+  # empty port) is refused here, with fixed text: the value is never
+  # echoed.
+  case "$host" in
+    *:*)
+      if [[ $host =~ ^[^:]+:[0-9]+$ ]]; then
+        port="${host##*:}"
+        host="${host%:*}"
+      else
+        fail "Input 'host' is not in the expected form: write host:NNNN, or pass the port in the 'port' input."
+      fi
+      ;;
+  esac
+
   require 'host' "$host" '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'
   if [ "${#host}" -gt 253 ]; then
     fail "Input 'host' is not in the expected form."

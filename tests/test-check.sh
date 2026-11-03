@@ -160,6 +160,7 @@ output_lacks_visible() { ! grep -q '^visible=' "$tmp/output"; }
 out_has() { grep -qF -- "$1" <<< "$out"; }
 out_lacks() { ! grep -qF -- "$1" <<< "$out"; }
 log_has() { grep -qF -- "$1" "$tmp/log"; }
+log_lacks() { ! grep -qF -- "$1" "$tmp/log"; }
 count_is() { [ "$(cat "$tmp/state/$1" 2> /dev/null || echo 0)" -eq "$2" ]; }
 never_called() { [ ! -e "$tmp/state/$1" ]; }
 
@@ -275,6 +276,55 @@ check 'input: ... before ssh runs' never_called ssh
 
 run INPUT_HOST='gerrit.example.org extra'
 check 'input: host with a space fails' exit_is 1
+
+# 'host' may carry its port, as gerrit-review-action accepts it.
+run INPUT_HOST='gerrit.example.org:40086' FAKE_SSH_STDOUT="$(row 12345 NEW)
+$stats1"
+check 'host:port: a host carrying its port succeeds' exit_is 0
+check 'host:port: ... connects to the embedded port' log_has ' -p 40086 '
+check 'host:port: ... and to the bare host' \
+  log_has '-- gerrit.example.org gerrit query'
+check 'host:port: ... without the port in the host argument' \
+  out_lacks 'gerrit.example.org:40086'
+
+run INPUT_HOST='gerrit.example.org:40086' INPUT_PORT=29418 \
+  FAKE_SSH_STDOUT="$(row 12345 NEW)
+$stats1"
+check 'host:port: the embedded port wins over the port input' \
+  log_has ' -p 40086 '
+check '... and the port input is not used' log_lacks ' -p 29418 '
+
+run INPUT_HOST='gerrit.example.org' INPUT_PORT=40086 \
+  FAKE_SSH_STDOUT="$(row 12345 NEW)
+$stats1"
+check 'host:port: a bare host still uses the port input' \
+  log_has ' -p 40086 '
+
+run INPUT_HOST='gerrit.example.org:00080' \
+  FAKE_SSH_STDOUT="$(row 12345 NEW)
+$stats1"
+check 'host:port: a port with leading zeros is read as decimal' \
+  log_has ' -p 80 '
+
+for bad_host in 'gerrit.example.org:abc' 'gerrit.example.org:' \
+  ':29418' 'gerrit.example.org:80a' 'gerrit.example.org:0' \
+  'gerrit.example.org:65536' 'gerrit.example.org:123456' \
+  'a:b:c' '::1' '[::1]:29418' '-oProxyCommand=x:22' \
+  'gerrit.example.org:22 extra' "gerrit.example.org:22"$'\n'"extra"; do
+  run INPUT_HOST="$bad_host"
+  check "host:port: refuses '${bad_host//$'\n'/\\n}'" exit_is 1
+  check '... before ssh runs' never_called ssh
+  check '... writes no verdict' output_lacks_visible
+  case "$bad_host" in
+    *abc* | *80a* | *x:22* | *extra*)
+      check '... without echoing the host' out_lacks "$bad_host"
+      ;;
+  esac
+done
+
+run INPUT_HOST='gerrit.example.org:abc'
+check 'host:port: a bad tail says how to write it' \
+  out_has 'write host:NNNN, or pass the port in the'
 
 run INPUT_USERNAME='-oProxyCommand=x'
 check 'input: user name that looks like an option fails' exit_is 1
