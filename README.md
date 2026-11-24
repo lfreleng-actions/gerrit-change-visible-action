@@ -7,7 +7,7 @@
 
 <!-- prettier-ignore-start -->
 <!-- markdownlint-disable-next-line MD013 -->
-[![Linux Foundation](https://img.shields.io/badge/Linux-Foundation-blue)](https://linuxfoundation.org/) [![Source Code](https://img.shields.io/badge/GitHub-100000?logo=github&logoColor=white&color=blue)](https://github.com/lfreleng-actions/gerrit-change-visible-action) [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0) [![pre-commit.ci status badge]][pre-commit.ci results page] [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lfreleng-actions/gerrit-change-visible-action/badge)](https://scorecard.dev/viewer/?uri=github.com/lfreleng-actions/gerrit-change-visible-action)
+[![Linux Foundation](https://img.shields.io/badge/Linux-Foundation-blue)](https://linuxfoundation.org/) [![Source Code](https://img.shields.io/badge/GitHub-100000?logo=github&logoColor=white&color=blue)](https://github.com/lfreleng-actions/gerrit-change-visible-action) [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0) [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lfreleng-actions/gerrit-change-visible-action/badge)](https://scorecard.dev/viewer/?uri=github.com/lfreleng-actions/gerrit-change-visible-action)
 <!-- prettier-ignore-end -->
 
 Reports whether a Gerrit change is visible to the account that will
@@ -179,6 +179,3 @@ The tests run offline against fake `ssh` and `curl` programs
 (`tests/test-check.sh`) and exercise the response parser directly
 (`tests/test_parse_response.py`). The `testing.yaml` workflow also runs
 the action in REST mode against the live LF Gerrit.
-
-[pre-commit.ci results page]: https://results.pre-commit.ci/latest/github/lfreleng-actions/gerrit-change-visible-action/main
-[pre-commit.ci status badge]: https://results.pre-commit.ci/badge/github/lfreleng-actions/gerrit-change-visible-action/main.svg
